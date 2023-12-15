@@ -3,10 +3,9 @@ import multiprocessing as mp
 import os
 import subprocess
 import sys
-from multiprocessing import Process
 from datetime import datetime
+from multiprocessing import Process
 from pprint import pprint
-
 
 # 设置numexpr最大线程数，默认为CPU核心数
 try:
@@ -18,27 +17,21 @@ except:
     pass
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from configs import (
-    LOG_PATH,
-    log_verbose,
-    logger,
-    LLM_MODELS,
-    EMBEDDING_MODEL,
-    TEXT_SPLITTER_NAME,
-    FSCHAT_CONTROLLER,
-    FSCHAT_OPENAI_API,
-    FSCHAT_MODEL_WORKERS,
-    API_SERVER,
-    WEBUI_SERVER,
-    HTTPX_DEFAULT_TIMEOUT,
-)
-from server.utils import (fschat_controller_address, fschat_model_worker_address,
-                          fschat_openai_api_address, set_httpx_config, get_httpx_client,
-                          get_model_worker_config, get_all_model_worker_configs,
-                          MakeFastAPIOffline, FastAPI, llm_device, embedding_device)
 import argparse
-from typing import Tuple, List, Dict
-from configs import VERSION
+from typing import Dict, List, Tuple
+
+from configs import (API_SERVER, EMBEDDING_MODEL, FSCHAT_CONTROLLER,
+                     FSCHAT_MODEL_WORKERS, FSCHAT_OPENAI_API,
+                     HTTPX_DEFAULT_TIMEOUT, LLM_MODELS, LOG_PATH,
+                     TEXT_SPLITTER_NAME, VERSION, WEBUI_SERVER, log_verbose,
+                     logger)
+from server.utils import (FastAPI, MakeFastAPIOffline, embedding_device,
+                          fschat_controller_address,
+                          fschat_model_worker_address,
+                          fschat_openai_api_address,
+                          get_all_model_worker_configs, get_httpx_client,
+                          get_model_worker_config, llm_device,
+                          set_httpx_config)
 
 
 def create_controller_app(
@@ -47,7 +40,7 @@ def create_controller_app(
 ) -> FastAPI:
     import fastchat.constants
     fastchat.constants.LOGDIR = LOG_PATH
-    from fastchat.serve.controller import app, Controller, logger
+    from fastchat.serve.controller import Controller, app, logger
     logger.setLevel(log_level)
 
     controller = Controller(dispatch_method)
@@ -101,12 +94,12 @@ def create_model_worker_app(log_level: str = "INFO", **kwargs) -> FastAPI:
         sys.modules["fastchat.serve.base_model_worker"].logger.setLevel(log_level)
     # 本地模型
     else:
-        from configs.model_config import VLLM_MODEL_DICT
+        from configs.model_config import SPECIAL_MODEL_DICT, VLLM_MODEL_DICT
         if kwargs["model_names"][0] in VLLM_MODEL_DICT and args.infer_turbo == "vllm":
             import fastchat.serve.vllm_worker
             from fastchat.serve.vllm_worker import VLLMWorker, app, worker_id
             from vllm import AsyncLLMEngine
-            from vllm.engine.arg_utils import AsyncEngineArgs,EngineArgs
+            from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 
             args.tokenizer = args.model_path # 如果tokenizer与model_path不一致在此处添加
             args.tokenizer_mode = 'auto'
@@ -167,8 +160,25 @@ def create_model_worker_app(log_level: str = "INFO", **kwargs) -> FastAPI:
             sys.modules["fastchat.serve.vllm_worker"].worker = worker
             sys.modules["fastchat.serve.vllm_worker"].logger.setLevel(log_level)
 
+        elif kwargs["model_names"][0] in SPECIAL_MODEL_DICT:
+            from special_model_loader.tigerbot_13b_chat_4bit_exl2.tigerbot_13b_chat_4bit_exl2 import (
+                ModelWorker, app, worker_id)
+            worker = ModelWorker(
+                controller_addr=args.controller_address,
+                worker_addr=args.worker_address,
+                worker_id=worker_id,
+                model_path=args.model_path,
+                model_names=args.model_names,
+                device=args.device,
+                limit_worker_concurrency=5,
+                no_register=False,
+            )
+                
+
         else:
-            from fastchat.serve.model_worker import app, GptqConfig, AWQConfig, ModelWorker, worker_id
+            from fastchat.serve.model_worker import (AWQConfig, GptqConfig,
+                                                     ModelWorker, app,
+                                                     worker_id)
 
             args.gpus = "0" # GPU的编号,如果有多个GPU，可以设置为"0,1,2,3"
             args.max_gpu_memory = "22GiB"
@@ -248,7 +258,8 @@ def create_openai_api_app(
 ) -> FastAPI:
     import fastchat.constants
     fastchat.constants.LOGDIR = LOG_PATH
-    from fastchat.serve.openai_api_server import app, CORSMiddleware, app_settings
+    from fastchat.serve.openai_api_server import (CORSMiddleware, app,
+                                                  app_settings)
     from fastchat.utils import build_logger
     logger = build_logger("openai_api", "openai_api.log")
     logger.setLevel(log_level)
@@ -278,11 +289,13 @@ def _set_app_event(app: FastAPI, started_event: mp.Event = None):
 
 
 def run_controller(log_level: str = "INFO", started_event: mp.Event = None):
-    import uvicorn
-    import httpx
-    from fastapi import Body
-    import time
     import sys
+    import time
+
+    import httpx
+    import uvicorn
+    from fastapi import Body
+
     from server.utils import set_httpx_config
     set_httpx_config()
 
@@ -368,9 +381,11 @@ def run_model_worker(
         q: mp.Queue = None,
         started_event: mp.Event = None,
 ):
+    import sys
+
     import uvicorn
     from fastapi import Body
-    import sys
+
     from server.utils import set_httpx_config
     set_httpx_config()
 
@@ -409,8 +424,10 @@ def run_model_worker(
 
 
 def run_openai_api(log_level: str = "INFO", started_event: mp.Event = None):
-    import uvicorn
     import sys
+
+    import uvicorn
+
     from server.utils import set_httpx_config
     set_httpx_config()
 
@@ -427,8 +444,9 @@ def run_openai_api(log_level: str = "INFO", started_event: mp.Event = None):
 
 
 def run_api_server(started_event: mp.Event = None, run_mode: str = None):
-    from server.api import create_app
     import uvicorn
+
+    from server.api import create_app
     from server.utils import set_httpx_config
     set_httpx_config()
 
@@ -559,8 +577,10 @@ def parse_args() -> argparse.ArgumentParser:
 
 def dump_server_info(after_start=False, args=None):
     import platform
-    import langchain
+
     import fastchat
+    import langchain
+
     from server.utils import api_address, webui_address
 
     print("\n")
@@ -596,8 +616,8 @@ def dump_server_info(after_start=False, args=None):
 
 
 async def start_main_server():
-    import time
     import signal
+    import time
 
     def handler(signalname):
         """
